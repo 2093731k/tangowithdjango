@@ -1,18 +1,17 @@
 from django.shortcuts import render
-from django.http import HttpResponse
-from rango.models import Category, Page
-from rango.forms import CategoryForm, PageForm
-from rango.forms import UserForm, UserProfileForm
+from rango.models import Category, Page, UserProfile
+from rango.forms import CategoryForm, PageForm, UserForm, UserProfileForm
 from django.contrib.auth import authenticate, login, logout
 from django.http import HttpResponseRedirect, HttpResponse
 from django.contrib.auth.decorators import login_required
 from datetime import datetime
 from rango.bing_search import run_query
+from django.shortcuts import redirect
+from django.contrib.auth.models import User
 
 # Create your views here.
 
 
-#index page
 def index(request):
 
     category_list = Category.objects.order_by('-likes')[:5]
@@ -47,36 +46,43 @@ def index(request):
     response = render(request,'rango/index.html', context_dict)
 
     return response
+
 def about(request):
     if request.session.get('visits'):
         count = request.session.get('visits')
     else:
-        count = 'Unknown'
-
-    context_dict = {'boldmessage': 'This tutorial has been put together by Ivan Kulazhenkov, 2093731k', 'visits' : count }
-    
-    return render(request, 'rango/about.html', context_dict)
+        count = 0
+    context_dict = {'boldmessage': "This tutorial has been done by Ivan Kulazhenkov, 2093731k",'visits':count}
+    return render(request,'rango/about.html',context_dict)
 
 def category(request, category_name_slug):
-
-    # Create a context dictionary which we can pass to the template rendering engine.
     context_dict = {}
+    context_dict['result_list'] = None
+    context_dict['query'] = None
+    if request.method == 'POST':
+        query = request.POST['query'].strip()
+
+        if query:
+            # Run our Bing function to get the results list!
+            result_list = run_query(query)
+
+            context_dict['result_list'] = result_list
+            context_dict['query'] = query
 
     try:
         category = Category.objects.get(slug=category_name_slug)
         context_dict['category_name'] = category.name
-        pages = Page.objects.filter(category=category)
+        pages = Page.objects.filter(category=category).order_by('-views')
         context_dict['pages'] = pages
         context_dict['category'] = category
-        context_dict['category_name_slug'] = category.slug
     except Category.DoesNotExist:
-        # Don't do anything
         pass
 
-    # Go render the response and return it to the client.
+    if not context_dict['query']:
+        context_dict['query'] = category.name
+
     return render(request, 'rango/category.html', context_dict)
 
-@login_required
 def add_category(request):
     # A HTTP POST?
     if request.method == 'POST':
@@ -128,9 +134,10 @@ def add_page(request, category_name_slug):
 
     return render(request, 'rango/add_page.html', context_dict)
 
+
 def register(request):
     if request.session.test_cookie_worked():
-        print ">>>>> TEST COOKIE WORKED!"
+        print ">>>> TEST COOKIE WORKED!"
         request.session.delete_test_cookie()
 
     # A boolean value for telling the template whether the registration was successful.
@@ -188,48 +195,50 @@ def register(request):
             'rango/register.html',
             {'user_form': user_form, 'profile_form': profile_form, 'registered': registered} )
 
+
 def user_login(request):
 
     # If the request is a HTTP POST, try to pull out the relevant information.
-    if request.method == 'POST':
+        if request.method == 'POST':
         # Gather the username and password provided by the user.
         # This information is obtained from the login form.
-        username = request.POST['username']
-        password = request.POST['password']
+            username = request.POST['username']
+            password = request.POST['password']
 
         # Use Django's machinery to attempt to see if the username/password
         # combination is valid - a User object is returned if it is.
-        user = authenticate(username=username, password=password)
+            user = authenticate(username=username, password=password)
 
         # If we have a User object, the details are correct.
         # If None (Python's way of representing the absence of a value), no user
         # with matching credentials was found.
-        if user:
+            if user:
             # Is the account active? It could have been disabled.
-            if user.is_active:
+                if user.is_active:
                 # If the account is valid and active, we can log the user in.
                 # We'll send the user back to the homepage.
-                login(request, user)
-                return HttpResponseRedirect('/rango/')
-            else:
+                     login(request, user)
+                     return HttpResponseRedirect('/rango/')
+                else:
                 # An inactive account was used - no logging in!
-                return HttpResponse("Your Rango account is disabled.")
-        else:
+                    return HttpResponse("Your Rango account is disabled.")
+            else:
             # Bad login details were provided. So we can't log the user in.
-            print "Invalid login details: {0}, {1}".format(username, password)
-            return HttpResponse("Invalid login details supplied.")
+                    print "Invalid login details: {0}, {1}".format(username, password)
+                    return HttpResponse("Invalid login details supplied.")
 
     # The request is not a HTTP POST, so display the login form.
     # This scenario would most likely be a HTTP GET.
-    else:
+        else:
         # No context variables to pass to the template system, hence the
         # blank dictionary object...
-        return render(request, 'rango/login.html', {})
+            return render(request, 'rango/login.html', {})
 
 @login_required
 def restricted(request):
-    return render(request), 'rango/restricted.html'
+    return HttpResponse("Since you're logged in, you can see this text!")
 
+# Use the login_required() decorator to ensure only those logged in can access the view.
 @login_required
 def user_logout(request):
     # Since we know the user is logged in, we can now just log them out.
@@ -237,6 +246,7 @@ def user_logout(request):
 
     # Take the user back to the homepage.
     return HttpResponseRedirect('/rango/')
+
 
 def search(request):
 
@@ -246,7 +256,51 @@ def search(request):
         query = request.POST['query'].strip()
 
         if query:
-            # Run our Bing function to get results
+            # Run our Bing function to get the results list!
             result_list = run_query(query)
 
     return render(request, 'rango/search.html', {'result_list': result_list})
+
+
+
+def track_url(request):
+    page_id = None
+    url = '/rango/'
+    if request.method == 'GET':
+        if 'page_id' in request.GET:
+            page_id = request.GET['page_id']
+            try:
+                page = Page.objects.get(id=page_id)
+                page.views = page.views + 1
+                page.save()
+                url = page.url
+            except:
+                pass
+
+    return redirect(url)
+
+def register_profile(request):
+
+    if request.method == "POST":
+        profile_form = UserProfileForm(data=request.POST)
+        if profile_form.is_valid():
+                profile = profile_form.save(commit=False)
+                user = User.objects.get(id=request.user.id)
+                profile.user = user
+                profile.website = request.POST['website']
+                profile.picture = request.FILES['picture']
+                profile.save()
+        return redirect('/rango/')
+    else:
+            profile_form = UserProfileForm()
+            return render(request, 'rango/profile_registration.html',{'profile_form': profile_form})
+
+@login_required
+def profile(request):
+    context_dict = {}
+
+    user = User.objects.get(username=request.user.username)
+    userProfile = UserProfile.objects.get(user_id=user.id)
+    context_dic = { 'user' : user, 'userprofile' : userProfile}
+
+    return render(request, 'rango/profile.html', context_dic)
